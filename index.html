@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Call Center Overtime Manager</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f8fafc; min-height: 100vh; }
+    select, input, textarea, button { font-family: inherit; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+const GAS_URL = "https://script.google.com/a/macros/mazama.ai/s/AKfycbxgdZvgfCzzrS2xagu7DZmgiAjQAJkZ-SiRKgRjyZtSAUkmBkVUY4-JAegQUQuM30wq/exec";
+
+const OT_SLOTS = (() => {
+  const s = [];
+  for (let h = 6; h < 22; h++)
+    for (let dur = 1; dur <= 6; dur++)
+      if (h + dur <= 22) s.push(`${h}:00-${h+dur}:00 (${dur}h)`);
+  return s;
+})();
+
+const getMonday = (date) => {
+  const d = new Date(date);
+  const day = d.getDay();
+  d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
+  d.setHours(0,0,0,0); return d;
+};
+const weekKey = (mon) => mon.toISOString().slice(0,10);
+const fmtDate = (d) => d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+const fmtWeek = (mon) => { const sun = new Date(mon); sun.setDate(sun.getDate()+6); return `${fmtDate(mon)} – ${fmtDate(sun)}`; };
+
+const emptyOT = () => ({id: Date.now()+Math.random(), slot:"", approved:null, confirmed:false, sales:"", autopays:"", points:"", timeType:"same", realTime:""});
+const emptyDay = () => ({shift:"", overtimes:[]});
+const emptyWeekSchedule = (agts) => {
+  const s = {};
+  agts.forEach(a => { s[a.id] = {}; DAYS.forEach(d => { s[a.id][d] = emptyDay(); }); });
+  return s;
+};
+
+const defaultAgents = [
+  {id:1,name:"Agent 1",rank:1},{id:2,name:"Agent 2",rank:2},
+  {id:3,name:"Agent 3",rank:3},{id:4,name:"Agent 4",rank:4},{id:5,name:"Agent 5",rank:5},
+];
+
+const EMOJIS = ["🔥","💰","🏆","⚡","🎯","🎉","💎","🚀","⭐","🎁","💪","🏅"];
+
+const postToSheet = async (payload) => {
+  try {
+    await fetch(GAS_URL, {
+      method:"POST", mode:"no-cors",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+  } catch(err) { console.error("Sheet sync error:", err); }
+};
+
+const LS = {
+  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+function App() {
+  const today = new Date();
+  const thisMonday = getMonday(today);
+  const nextMonday = new Date(thisMonday); nextMonday.setDate(nextMonday.getDate()+7);
+  const thisKey = weekKey(thisMonday);
+  const nextKey = weekKey(nextMonday);
+
+  const [tab, setTab] = useState("calendar");
+  const [activeWeek, setActiveWeek] = useState(thisKey);
+  const [weekAgents, setWeekAgents] = useState(() => LS.get("weekAgents") || {[thisKey]:defaultAgents,[nextKey]:defaultAgents});
+  const [weekSchedule, setWeekSchedule] = useState(() => LS.get("weekSchedule") || {[thisKey]:emptyWeekSchedule(defaultAgents),[nextKey]:emptyWeekSchedule(defaultAgents)});
+  const [weekNotes, setWeekNotes] = useState(() => LS.get("weekNotes") || {});
+  const [newAgent, setNewAgent] = useState("");
+  const [rankEdit, setRankEdit] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+  const [confirmModal, setConfirmModal] = useState(null);
+  const [confirmForm, setConfirmForm] = useState({confirmed:false,sales:"",autopays:"",points:"",timeType:"same",realTime:""});
+  const [noteModal, setNoteModal] = useState(null);
+  const [noteForm, setNoteForm] = useState({text:"",emoji:"🔥"});
+
+  const agents = weekAgents[activeWeek] || defaultAgents;
+  const schedule = weekSchedule[activeWeek] || emptyWeekSchedule(agents);
+  const sortedAgents = [...agents].sort((a,b) => a.rank - b.rank);
+
+  const setAgents = (na) => { const nwa = {...weekAgents,[activeWeek]:na}; setWeekAgents(nwa); LS.set("weekAgents",nwa); };
+  const setSchedule = (ns) => { const nws = {...weekSchedule,[activeWeek]:ns}; setWeekSchedule(nws); LS.set("weekSchedule",nws); };
+
+  const getCell = (agentId, day) => schedule[agentId]?.[day] || emptyDay();
+  const updateCell = (agentId, day, cell) => setSchedule({...schedule,[agentId]:{...schedule[agentId],[day]:cell}});
+
+  const addOT = (agentId, day) => {
+    const c = getCell(agentId, day); if (c.overtimes.length >= 6) return;
+    updateCell(agentId, day, {...c, overtimes:[...c.overtimes, emptyOT()]});
+  };
+  const removeOT = (agentId, day, otId) => {
+    const c = getCell(agentId, day);
+    updateCell(agentId, day, {...c, overtimes:c.overtimes.filter(o=>o.id!==otId)});
+    postToSheet({action:"deleteRow", sheetName:"OT History", rowId:`${activeWeek}-${agentId}-${day}-${otId}`});
+  };
+  const updateOTSlot = (agentId, day, otId, slot) => {
+    const c = getCell(agentId, day);
+    updateCell(agentId, day, {...c, overtimes:c.overtimes.map(o=>o.id===otId?{...o,slot}:o)});
+  };
+  const updateOTApproval = (agentId, day, otId, val) => {
+    const c = getCell(agentId, day);
+    updateCell(agentId, day, {...c, overtimes:c.overtimes.map(o=>o.id===otId?{...o,approved:val}:o)});
+  };
+  const openConfirm = (agentId, day, otId) => {
+    const ot = getCell(agentId, day).overtimes.find(o=>o.id===otId);
+    setConfirmForm({confirmed:ot?.confirmed||false,sales:ot?.sales||"",autopays:ot?.autopays||"",points:ot?.points||"",timeType:ot?.timeType||"same",realTime:ot?.realTime||""});
+    setConfirmModal({agentId, day, otId});
+  };
+  const saveConfirm = () => {
+    if (!confirmModal) return;
+    const {agentId, day, otId} = confirmModal;
+    const c = getCell(agentId, day);
+    const updatedOT = {...c.overtimes.find(o=>o.id===otId), ...confirmForm};
+    updateCell(agentId, day, {...c, overtimes:c.overtimes.map(o=>o.id===otId?updatedOT:o)});
+    const agent = agents.find(a=>a.id===agentId);
+    const mon = activeWeek===thisKey?thisMonday:nextMonday;
+    postToSheet({
+      action:"logOT",
+      rowId:`${activeWeek}-${agentId}-${day}-${otId}`,
+      week:activeWeek, weekLabel:fmtWeek(mon),
+      day, agentName:agent?.name,
+      slot:updatedOT.slot, timeType:updatedOT.timeType, realTime:updatedOT.realTime||"",
+      approved:updatedOT.approved, confirmed:updatedOT.confirmed,
+      sales:updatedOT.sales, autopays:updatedOT.autopays, points:updatedOT.points,
+    });
+    setConfirmModal(null);
+  };
+
+  const getNotes = (day) => weekNotes[activeWeek]?.[day] || [];
+  const saveNotes = (day, notes) => {
+    const nwn = {...weekNotes,[activeWeek]:{...weekNotes[activeWeek],[day]:notes}};
+    setWeekNotes(nwn); LS.set("weekNotes",nwn);
+  };
+  const addNote = (day) => {
+    if (!noteForm.text.trim()) return;
+    const note = {id:Date.now(), text:noteForm.text.trim(), emoji:noteForm.emoji};
+    saveNotes(day, [...getNotes(day), note]);
+    const mon = activeWeek===thisKey?thisMonday:nextMonday;
+    postToSheet({action:"logNote", noteId:`${activeWeek}-${day}-${note.id}`, week:activeWeek, weekLabel:fmtWeek(mon), day, emoji:note.emoji, text:note.text});
+    setNoteForm({text:"",emoji:"🔥"}); setNoteModal(null);
+  };
+  const removeNote = (day, id) => {
+    saveNotes(day, getNotes(day).filter(n=>n.id!==id));
+    postToSheet({action:"deleteRow", sheetName:"Daily Notes", rowId:`${activeWeek}-${day}-${id}`});
+  };
+
+  const handleCSVImport = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    Papa.parse(file, {header:true, skipEmptyLines:true, complete:(res) => {
+      try {
+        const rows = res.data;
+        const headers = Object.keys(rows[0]).map(h=>h.trim());
+        const nameCol = headers.find(h=>/agent|nombre|name/i.test(h));
+        if (!nameCol) { setImportMsg("❌ Column 'Agent' not found."); return; }
+        const newAgts=[], newSched={};
+        rows.forEach((row,i) => {
+          const name = String(row[nameCol]||"").trim(); if (!name) return;
+          const id = Date.now()+i;
+          newAgts.push({id, name, rank:i+1});
+          newSched[id] = {};
+          DAYS.forEach(d => {
+            const shift = row[d] ? String(row[d]).trim() : "";
+            const ex = (weekAgents[activeWeek]||[]).find(a=>a.name===name);
+            const prevOTs = ex ? (weekSchedule[activeWeek]||{})[ex.id]?.[d]?.overtimes||[] : [];
+            newSched[id][d] = {shift, overtimes:prevOTs};
+          });
+        });
+        const nwa = {...weekAgents,[activeWeek]:newAgts};
+        const nws = {...weekSchedule,[activeWeek]:newSched};
+        setWeekAgents(nwa); setWeekSchedule(nws);
+        LS.set("weekAgents",nwa); LS.set("weekSchedule",nws);
+        setImportMsg(`✅ ${newAgts.length} agents imported.`);
+        setTimeout(()=>setImportMsg(""),4000);
+      } catch(err) { setImportMsg("❌ Error: "+err.message); }
+    }});
+    e.target.value="";
+  };
+
+  const exportTemplate = () => {
+    const header = ["Agent",...DAYS];
+    const rows = sortedAgents.map(a=>[a.name,...DAYS.map(d=>getCell(a.id,d).shift)]);
+    const csv = Papa.unparse([header,...rows]);
+    const blob = new Blob([csv],{type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href=url; link.download=`shifts_${activeWeek}.csv`; link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyToNextWeek = () => {
+    const curAgents = weekAgents[thisKey]||defaultAgents;
+    const curSched = weekSchedule[thisKey]||{};
+    const nwa = {...weekAgents,[nextKey]:curAgents.map(a=>({...a}))};
+    const newSched = {};
+    curAgents.forEach(a => { newSched[a.id]={}; DAYS.forEach(d => { newSched[a.id][d]={shift:curSched[a.id]?.[d]?.shift||"",overtimes:[]}; }); });
+    const nws = {...weekSchedule,[nextKey]:newSched};
+    setWeekAgents(nwa); setWeekSchedule(nws);
+    LS.set("weekAgents",nwa); LS.set("weekSchedule",nws);
+    setImportMsg("✅ Shifts copied from this week. OT is blank."); setTimeout(()=>setImportMsg(""),4000);
+  };
+
+  const addAgent = () => {
+    if (!newAgent.trim()) return;
+    const id=Date.now(), na=[...agents,{id,name:newAgent.trim(),rank:agents.length+1}];
+    const ns={...schedule,[id]:{}}; DAYS.forEach(d=>{ns[id][d]=emptyDay();});
+    setAgents(na); setSchedule(ns); setNewAgent("");
+  };
+  const removeAgent = id => setAgents(agents.filter(a=>a.id!==id));
+  const updateRank = (id,val) => setAgents(agents.map(a=>a.id===id?{...a,rank:parseInt(val)||a.rank}:a));
+
+  const weekLabel = (key) => key===thisKey?"This Week":"Next Week";
+  const weekMon = (key) => key===thisKey?thisMonday:nextMonday;
+
+  const summaryByDay = {};
+  DAYS.forEach(d=>{summaryByDay[d]={agents:[],totalSales:0,totalAutopays:0,totalPoints:0,totalOTs:0};});
+  let wkSales=0,wkAP=0,wkPts=0,wkOTs=0;
+  sortedAgents.forEach(agent=>{
+    DAYS.forEach(day=>{
+      getCell(agent.id,day).overtimes.filter(o=>o.confirmed&&o.slot).forEach(ot=>{
+        const s=parseFloat(ot.sales)||0,ap=parseInt(ot.autopays)||0,pt=parseInt(ot.points)||0;
+        summaryByDay[day].agents.push({name:agent.name,slot:ot.slot,sales:s,autopays:ap,points:pt,approved:ot.approved});
+        summaryByDay[day].totalSales+=s; summaryByDay[day].totalAutopays+=ap;
+        summaryByDay[day].totalPoints+=pt; summaryByDay[day].totalOTs+=1;
+        wkSales+=s; wkAP+=ap; wkPts+=pt; wkOTs+=1;
+      });
+    });
+  });
+
+  const historyRows=[];
+  sortedAgents.forEach(agent=>{
+    DAYS.forEach(day=>{
+      getCell(agent.id,day).overtimes.forEach(ot=>{
+        if(ot.slot) historyRows.push({agentName:agent.name,day,slot:ot.slot,approved:ot.approved,confirmed:ot.confirmed,sales:ot.sales,autopays:ot.autopays,points:ot.points,timeType:ot.timeType,realTime:ot.realTime});
+      });
+    });
+  });
+
+  const th={padding:"10px 12px",textAlign:"center",borderBottom:"2px solid #e5e7eb",fontSize:13,color:"#374151",whiteSpace:"nowrap"};
+  const td={padding:"8px 10px",borderBottom:"1px solid #f3f4f6",fontSize:13,verticalAlign:"top"};
+  const sel={width:"100%",padding:"3px 4px",border:"1px solid #e5e7eb",borderRadius:6,fontSize:12,cursor:"pointer"};
+
+  const TabBtn = ({k,label}) => (
+    <button onClick={()=>setTab(k)} style={{padding:"10px 20px",background:tab===k?"#4f46e5":"#e5e7eb",
+      color:tab===k?"white":"#374151",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:14}}>
+      {label}
+    </button>
+  );
+
+  const WeekToggle = () => (
+    <div style={{display:"flex",gap:0,background:"#e5e7eb",borderRadius:10,padding:3,width:"fit-content",marginBottom:16}}>
+      {[thisKey,nextKey].map(key=>(
+        <button key={key} onClick={()=>{setActiveWeek(key);setRankEdit(false);}}
+          style={{padding:"8px 20px",background:activeWeek===key?"white":"transparent",
+            color:activeWeek===key?"#4f46e5":"#6b7280",border:"none",borderRadius:8,cursor:"pointer",
+            fontWeight:activeWeek===key?700:500,fontSize:13,boxShadow:activeWeek===key?"0 1px 4px rgba(0,0,0,.1)":"none"}}>
+          {weekLabel(key)}<br/>
+          <span style={{fontSize:11,opacity:.7}}>{fmtWeek(weekMon(key))}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{maxWidth:1200,margin:"0 auto",padding:16}}>
+
+      {/* HEADER */}
+      <div style={{background:"#4f46e5",borderRadius:12,padding:"16px 24px",marginBottom:20,color:"white"}}>
+        <h1 style={{margin:0,fontSize:22}}>📞 Call Center Overtime Manager</h1>
+        <div style={{background:"rgba(255,255,255,.15)",borderRadius:8,padding:"8px 14px",marginTop:10,marginBottom:4,display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:16}}>📌</span>
+          <span style={{fontSize:13,fontWeight:600}}>Please confirm your OT <u>at least 2 days in advance</u>.</span>
+        </div>
+        <div style={{display:"flex",gap:32,marginTop:6,flexWrap:"wrap"}}>
+          <div>
+            <div style={{opacity:.7,fontSize:11,textTransform:"uppercase",letterSpacing:1}}>This Week</div>
+            <div style={{fontWeight:700,fontSize:15}}>📅 {fmtWeek(thisMonday)}</div>
+          </div>
+          <div>
+            <div style={{opacity:.7,fontSize:11,textTransform:"uppercase",letterSpacing:1}}>Next Week</div>
+            <div style={{fontWeight:600,fontSize:14,opacity:.9}}>📅 {fmtWeek(nextMonday)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>
+        <TabBtn k="calendar" label="📅 Calendar"/>
+        <TabBtn k="notes" label="📣 Daily Notes"/>
+        <TabBtn k="summary" label="📊 Summary"/>
+        <TabBtn k="ranking" label="🏆 Ranking"/>
+        <TabBtn k="history" label="📋 History"/>
+        <TabBtn k="agents" label="👥 Agents"/>
+        <TabBtn k="import" label="📂 Import Shifts"/>
+      </div>
+
+      <WeekToggle/>
+
+      {/* CALENDAR */}
+      {tab==="calendar"&&(
+        <div style={{overflowX:"auto"}}>
+          <table style={{borderCollapse:"collapse",width:"100%",fontSize:13}}>
+            <thead><tr>
+              <th style={th}>#</th>
+              <th style={{...th,textAlign:"left"}}>Agent</th>
+              {DAYS.map(d=><th key={d} style={{...th,minWidth:160}}>{d}</th>)}
+            </tr></thead>
+            <tbody>
+              <tr style={{background:"#fffbeb"}}>
+                <td colSpan={2} style={{...td,fontSize:11,color:"#92400e",fontWeight:700,textAlign:"center",whiteSpace:"nowrap"}}>📣 Notes</td>
+                {DAYS.map(d=>{
+                  const notes=getNotes(d);
+                  return(
+                    <td key={d} style={{...td,verticalAlign:"top",padding:"6px 8px"}}>
+                      {notes.map(n=>(
+                        <div key={n.id} style={{display:"flex",alignItems:"flex-start",gap:4,marginBottom:4,
+                          background:"white",borderRadius:6,padding:"4px 6px",border:"1px solid #fcd34d",fontSize:11}}>
+                          <span>{n.emoji}</span>
+                          <span style={{flex:1,color:"#78350f",lineHeight:1.3}}>{n.text}</span>
+                          <button onClick={()=>removeNote(d,n.id)} style={{background:"none",border:"none",color:"#d97706",cursor:"pointer",fontSize:11,padding:0}}>✕</button>
+                        </div>
+                      ))}
+                      <button onClick={()=>{setNoteModal({day:d});setNoteForm({text:"",emoji:"🔥"});}}
+                        style={{width:"100%",padding:"2px 0",background:"#fef9c3",color:"#a16207",border:"1px dashed #fcd34d",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>
+                        + Add note
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+              {sortedAgents.map(agent=>(
+                <tr key={agent.id} style={{background:"white",verticalAlign:"top"}}>
+                  <td style={{...td,color:"#9ca3af",textAlign:"center"}}>{agent.rank}</td>
+                  <td style={{...td,fontWeight:600,whiteSpace:"nowrap"}}>{agent.name}</td>
+                  {DAYS.map(d=>{
+                    const cell=getCell(agent.id,d);
+                    return(
+                      <td key={d} style={{...td,minWidth:160,background:cell.overtimes.length>0?"#ede9fe":"white"}}>
+                        <div style={{fontSize:11,color:"#6b7280",background:"#f3f4f6",borderRadius:4,padding:"2px 6px",textAlign:"center",marginBottom:6}}>
+                          {cell.shift||<span style={{color:"#d1d5db"}}>No shift</span>}
+                        </div>
+                        {cell.overtimes.map((ot,i)=>(
+                          <div key={ot.id} style={{marginBottom:6,background:"white",borderRadius:6,padding:6,border:"1px solid #e0e7ff"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                              <span style={{fontSize:10,color:"#7c3aed",fontWeight:700}}>OT {i+1}</span>
+                              <button onClick={()=>removeOT(agent.id,d,ot.id)} style={{marginLeft:"auto",background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:13}}>✕</button>
+                            </div>
+                            <select value={ot.slot} onChange={e=>updateOTSlot(agent.id,d,ot.id,e.target.value)}
+                              style={{...sel,background:ot.slot?"#7c3aed":"#f3f4f6",color:ot.slot?"white":"#9ca3af",marginBottom:4}}>
+                              <option value="">Select slot...</option>
+                              {OT_SLOTS.map(s=><option key={s} value={s}>{s}</option>)}
+                            </select>
+                            {ot.slot&&(
+                              <div style={{display:"flex",gap:3,marginTop:2}}>
+                                <button title="Approve" onClick={()=>updateOTApproval(agent.id,d,ot.id,ot.approved===true?null:true)}
+                                  style={{flex:1,padding:"2px 0",border:"2px solid "+(ot.approved===true?"#16a34a":"#d1d5db"),borderRadius:4,cursor:"pointer",background:ot.approved===true?"#dcfce7":"white",fontSize:14}}>👍</button>
+                                <button title="Deny" onClick={()=>updateOTApproval(agent.id,d,ot.id,ot.approved===false?null:false)}
+                                  style={{flex:1,padding:"2px 0",border:"2px solid "+(ot.approved===false?"#dc2626":"#d1d5db"),borderRadius:4,cursor:"pointer",background:ot.approved===false?"#fee2e2":"white",fontSize:14}}>👎</button>
+                                <button onClick={()=>openConfirm(agent.id,d,ot.id)}
+                                  style={{flex:2,fontSize:11,padding:"2px 4px",border:"none",borderRadius:4,cursor:"pointer",background:ot.confirmed?"#16a34a":"#f59e0b",color:"white"}}>
+                                  {ot.confirmed?`✅$${ot.sales}`:"⏳Confirm"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {cell.overtimes.length<6&&(
+                          <button onClick={()=>addOT(agent.id,d)}
+                            style={{width:"100%",padding:"4px 0",background:"#e0e7ff",color:"#4f46e5",border:"1px dashed #818cf8",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                            + Add OT
+                          </button>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* NOTES TAB */}
+      {tab==="notes"&&(
+        <div>
+          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>Add incentives, contests, or reminders per day to motivate agents during OT.</p>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:16}}>
+            {DAYS.map(day=>{
+              const notes=getNotes(day);
+              return(
+                <div key={day} style={{background:"white",borderRadius:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.07)"}}>
+                  <div style={{background:"#fffbeb",padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"2px solid #fcd34d"}}>
+                    <span style={{fontWeight:700,color:"#92400e"}}>{day}</span>
+                    <button onClick={()=>{setNoteModal({day});setNoteForm({text:"",emoji:"🔥"});}}
+                      style={{padding:"4px 12px",background:"#f59e0b",color:"white",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>+ Add</button>
+                  </div>
+                  <div style={{padding:12,minHeight:80}}>
+                    {notes.length===0
+                      ?<p style={{color:"#d1d5db",fontSize:13,margin:0,textAlign:"center",paddingTop:16}}>No notes yet</p>
+                      :notes.map(n=>(
+                        <div key={n.id} style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:8,background:"#fffbeb",borderRadius:8,padding:"8px 10px",border:"1px solid #fde68a"}}>
+                          <span style={{fontSize:20}}>{n.emoji}</span>
+                          <span style={{flex:1,fontSize:13,color:"#78350f",lineHeight:1.4}}>{n.text}</span>
+                          <button onClick={()=>removeNote(day,n.id)} style={{background:"none",border:"none",color:"#d97706",cursor:"pointer",fontSize:14,padding:0}}>✕</button>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* SUMMARY */}
+      {tab==="summary"&&(
+        <div>
+          <div style={{background:"#4f46e5",borderRadius:12,padding:"16px 20px",marginBottom:20,color:"white"}}>
+            <div style={{fontWeight:700,fontSize:16,marginBottom:12}}>📊 {weekLabel(activeWeek)} — {fmtWeek(weekMon(activeWeek))}</div>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+              {[["OT Sessions",wkOTs,"#a5b4fc"],["Total Sales","$"+wkSales.toFixed(2),"#6ee7b7"],["Autopays",wkAP,"#fcd34d"],["Points",wkPts,"#f9a8d4"]].map(([l,v,c])=>(
+                <div key={l} style={{background:"rgba(255,255,255,.15)",borderRadius:8,padding:"10px 16px",minWidth:110}}>
+                  <div style={{fontSize:11,opacity:.8}}>{l}</div>
+                  <div style={{fontSize:22,fontWeight:700,color:c}}>{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          {DAYS.map(day=>{
+            const d=summaryByDay[day];
+            if(!d.agents.length) return(
+              <div key={day} style={{background:"white",borderRadius:10,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",gap:12,opacity:.45}}>
+                <span style={{fontWeight:600,width:100}}>{day}</span>
+                <span style={{color:"#9ca3af",fontSize:13}}>No confirmed OT</span>
+              </div>
+            );
+            return(
+              <div key={day} style={{background:"white",borderRadius:10,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+                <div style={{background:"#f0f4ff",padding:"10px 16px",display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+                  <span style={{fontWeight:700,fontSize:15,minWidth:90}}>{day}</span>
+                  <span style={{fontSize:13,color:"#4f46e5"}}>🔢 {d.totalOTs} sessions</span>
+                  <span style={{fontSize:13,color:"#059669"}}>💰 ${d.totalSales.toFixed(2)}</span>
+                  <span style={{fontSize:13,color:"#b45309"}}>⚡ {d.totalAutopays} autopays</span>
+                  <span style={{fontSize:13,color:"#7c3aed"}}>⭐ {d.totalPoints} pts</span>
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead><tr style={{background:"#fafafa"}}>
+                    {["Agent","OT Slot","Approved","Sales $","Autopays","Points"].map(h=><th key={h} style={th}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {d.agents.map((a,i)=>(
+                      <tr key={i} style={{background:i%2===0?"white":"#fafafa"}}>
+                        <td style={td}>{a.name}</td><td style={td}>{a.slot}</td>
+                        <td style={{...td,textAlign:"center"}}>{a.approved===true?"👍":a.approved===false?"👎":"—"}</td>
+                        <td style={{...td,textAlign:"center"}}>${a.sales.toFixed(2)}</td>
+                        <td style={{...td,textAlign:"center"}}>{a.autopays}</td>
+                        <td style={{...td,textAlign:"center"}}>{a.points}</td>
+                      </tr>
+                    ))}
+                    <tr style={{background:"#f0fdf4",fontWeight:700}}>
+                      <td style={td} colSpan={3}>Daily Total</td>
+                      <td style={{...td,textAlign:"center"}}>${d.totalSales.toFixed(2)}</td>
+                      <td style={{...td,textAlign:"center"}}>{d.totalAutopays}</td>
+                      <td style={{...td,textAlign:"center"}}>{d.totalPoints}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* RANKING */}
+      {tab==="ranking"&&(
+        <div style={{background:"white",borderRadius:12,padding:20}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <h2 style={{margin:0,fontSize:18}}>🏆 Agent Ranking — {weekLabel(activeWeek)}</h2>
+            <button onClick={()=>setRankEdit(!rankEdit)} style={{padding:"8px 16px",background:"#4f46e5",color:"white",border:"none",borderRadius:8,cursor:"pointer"}}>
+              {rankEdit?"✅ Save":"✏️ Edit Ranking"}
+            </button>
+          </div>
+          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>OT assignment priority. Update every 15 days.</p>
+          {sortedAgents.map((a,i)=>(
+            <div key={a.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #f3f4f6"}}>
+              <div style={{width:32,height:32,borderRadius:"50%",background:i<3?"#fbbf24":"#e5e7eb",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:14}}>
+                {i===0?"🥇":i===1?"🥈":i===2?"🥉":a.rank}
+              </div>
+              <span style={{flex:1,fontWeight:600}}>{a.name}</span>
+              {rankEdit
+                ?<input type="number" value={a.rank} onChange={e=>updateRank(a.id,e.target.value)} style={{width:60,padding:4,border:"1px solid #d1d5db",borderRadius:6,textAlign:"center"}}/>
+                :<span style={{color:"#6b7280",fontSize:13}}>Rank #{a.rank}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* HISTORY */}
+      {tab==="history"&&(
+        <div style={{background:"white",borderRadius:12,padding:20}}>
+          <h2 style={{margin:"0 0 16px",fontSize:18}}>📋 History — {weekLabel(activeWeek)}</h2>
+          {historyRows.length===0
+            ?<p style={{color:"#9ca3af",textAlign:"center",padding:40}}>No records yet for this week.</p>
+            :<div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",width:"100%",fontSize:13}}>
+                <thead><tr style={{background:"#f8fafc"}}>
+                  {["Agent","Day","OT Slot","Time","Approved","Confirmed","Sales $","Autopays","Points"].map(h=><th key={h} style={th}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {historyRows.map((h,i)=>(
+                    <tr key={i} style={{background:i%2===0?"white":"#fafafa"}}>
+                      <td style={td}>{h.agentName}</td>
+                      <td style={td}>{h.day}</td>
+                      <td style={td}>{h.slot}</td>
+                      <td style={td}>{h.timeType==="real"?`🕐 ${h.realTime||""}` : "✅ Same"}</td>
+                      <td style={{...td,textAlign:"center"}}>{h.approved===true?"👍":h.approved===false?"👎":"—"}</td>
+                      <td style={{...td,textAlign:"center"}}>{h.confirmed?"✅":"❌"}</td>
+                      <td style={{...td,textAlign:"center"}}>{h.sales?`$${h.sales}`:"-"}</td>
+                      <td style={{...td,textAlign:"center"}}>{h.autopays||"-"}</td>
+                      <td style={{...td,textAlign:"center"}}>{h.points||"-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>}
+        </div>
+      )}
+
+      {/* AGENTS */}
+      {tab==="agents"&&(
+        <div style={{background:"white",borderRadius:12,padding:20}}>
+          <h2 style={{margin:"0 0 4px",fontSize:18}}>👥 Agents — {weekLabel(activeWeek)}</h2>
+          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>Agent lists are independent per week.</p>
+          <div style={{display:"flex",gap:8,marginBottom:20}}>
+            <input value={newAgent} onChange={e=>setNewAgent(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAgent()} placeholder="Agent name..."
+              style={{flex:1,padding:"8px 12px",border:"1px solid #d1d5db",borderRadius:8,fontSize:14}}/>
+            <button onClick={addAgent} style={{padding:"8px 16px",background:"#4f46e5",color:"white",border:"none",borderRadius:8,cursor:"pointer"}}>+ Add</button>
+          </div>
+          {agents.map(a=>(
+            <div key={a.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #f3f4f6"}}>
+              <span style={{flex:1,fontWeight:600}}>{a.name}</span>
+              <span style={{color:"#9ca3af",fontSize:13}}>Rank #{a.rank}</span>
+              <button onClick={()=>removeAgent(a.id)} style={{padding:"4px 10px",background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:6,cursor:"pointer"}}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* IMPORT */}
+      {tab==="import"&&(
+        <div style={{background:"white",borderRadius:12,padding:24}}>
+          <h2 style={{margin:"0 0 8px",fontSize:18}}>📂 Import Shifts — {weekLabel(activeWeek)}</h2>
+          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>Edit in Excel, save as <strong>CSV</strong>, then upload. First column must be <strong>Agent</strong>, followed by one column per day.</p>
+          {activeWeek===nextKey&&(
+            <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:"12px 16px",marginBottom:20,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <span style={{fontSize:13,color:"#92400e",flex:1}}>💡 Want to start next week from this week's shifts?</span>
+              <button onClick={copyToNextWeek} style={{padding:"8px 16px",background:"#f59e0b",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>📋 Copy This Week's Shifts</button>
+            </div>
+          )}
+          <div style={{background:"#f8fafc",border:"1px solid #e5e7eb",borderRadius:8,padding:16,marginBottom:20,overflowX:"auto"}}>
+            <p style={{margin:"0 0 8px",fontSize:12,color:"#9ca3af",fontWeight:600}}>FORMAT EXAMPLE:</p>
+            <table style={{borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr>{["Agent",...DAYS].map(h=><th key={h} style={{padding:"6px 10px",background:"#e0e7ff",border:"1px solid #e5e7eb",fontWeight:600}}>{h}</th>)}</tr></thead>
+              <tbody>
+                {[["John Smith","8:00-16:00","8:00-16:00","OFF","9:00-17:00","9:00-17:00","OFF","OFF"],
+                  ["Maria Lopez","14:00-22:00","14:00-22:00","OFF","OFF","14:00-22:00","10:00-18:00","OFF"]]
+                  .map((r,i)=><tr key={i}>{r.map((c,j)=><td key={j} style={{padding:"5px 10px",border:"1px solid #e5e7eb",textAlign:"center"}}>{c}</td>)}</tr>)}
+              </tbody>
+            </table>
+          </div>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+            <button onClick={exportTemplate} style={{padding:"10px 20px",background:"#059669",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>⬇️ Download CSV Template</button>
+            <label style={{padding:"10px 20px",background:"#4f46e5",color:"white",borderRadius:8,cursor:"pointer",fontWeight:600}}>
+              ⬆️ Upload CSV
+              <input type="file" accept=".csv" onChange={handleCSVImport} style={{display:"none"}}/>
+            </label>
+          </div>
+          {importMsg&&(
+            <div style={{marginTop:16,padding:"10px 16px",borderRadius:8,fontSize:14,background:importMsg.startsWith("✅")?"#d1fae5":"#fee2e2",color:importMsg.startsWith("✅")?"#065f46":"#991b1b"}}>
+              {importMsg}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* NOTE MODAL */}
+      {noteModal&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
+          <div style={{background:"white",borderRadius:16,padding:24,width:360}}>
+            <h3 style={{margin:"0 0 4px"}}>📣 Add Note</h3>
+            <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>{noteModal.day} — {weekLabel(activeWeek)}</p>
+            <div style={{marginBottom:14}}>
+              <span style={{fontSize:13,color:"#6b7280",display:"block",marginBottom:6}}>Pick an emoji</span>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {EMOJIS.map(e=>(
+                  <button key={e} onClick={()=>setNoteForm(f=>({...f,emoji:e}))}
+                    style={{fontSize:20,padding:"4px 6px",borderRadius:6,cursor:"pointer",border:`2px solid ${noteForm.emoji===e?"#f59e0b":"#e5e7eb"}`,background:noteForm.emoji===e?"#fffbeb":"white"}}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label style={{display:"block",marginBottom:16}}>
+              <span style={{fontSize:13,color:"#6b7280"}}>Message / Incentive</span>
+              <textarea value={noteForm.text} onChange={e=>setNoteForm(f=>({...f,text:e.target.value}))}
+                placeholder="e.g. $1 bonus per sale today!"
+                style={{display:"block",width:"100%",marginTop:4,padding:"8px 12px",border:"1px solid #d1d5db",borderRadius:8,fontSize:14,boxSizing:"border-box",minHeight:80,resize:"vertical"}}/>
+            </label>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setNoteModal(null)} style={{flex:1,padding:10,border:"1px solid #d1d5db",borderRadius:8,cursor:"pointer",background:"white"}}>Cancel</button>
+              <button onClick={()=>addNote(noteModal.day)} style={{flex:1,padding:10,background:"#f59e0b",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Save Note</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM MODAL */}
+      {confirmModal&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
+          <div style={{background:"white",borderRadius:16,padding:24,width:340,maxHeight:"90vh",overflowY:"auto"}}>
+            <h3 style={{margin:"0 0 4px"}}>Confirm Overtime</h3>
+            <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>
+              {agents.find(a=>a.id===confirmModal.agentId)?.name} — {confirmModal.day}<br/>
+              <strong>{getCell(confirmModal.agentId,confirmModal.day).overtimes.find(o=>o.id===confirmModal.otId)?.slot}</strong>
+            </p>
+            <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,cursor:"pointer"}}>
+              <input type="checkbox" checked={confirmForm.confirmed} onChange={e=>setConfirmForm({...confirmForm,confirmed:e.target.checked})}/>
+              <span style={{fontWeight:600}}>OT Completed</span>
+            </label>
+            <div style={{marginBottom:14}}>
+              <span style={{fontSize:13,color:"#6b7280",display:"block",marginBottom:6}}>⏱ OT Time</span>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {[{val:"same",label:"✅ Same as scheduled"},{val:"real",label:"🕐 Real time (specify)"}].map(({val,label})=>(
+                  <label key={val} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",padding:"7px 10px",borderRadius:8,
+                    border:`2px solid ${confirmForm.timeType===val?"#4f46e5":"#e5e7eb"}`,background:confirmForm.timeType===val?"#eef2ff":"white",fontSize:13}}>
+                    <input type="radio" name="timeType" value={val} checked={confirmForm.timeType===val}
+                      onChange={()=>setConfirmForm({...confirmForm,timeType:val,realTime:""})} style={{accentColor:"#4f46e5"}}/>
+                    {label}
+                  </label>
+                ))}
+              </div>
+              {confirmForm.timeType==="real"&&(
+                <input type="text" value={confirmForm.realTime} placeholder="e.g. 9:15-11:45"
+                  onChange={e=>setConfirmForm({...confirmForm,realTime:e.target.value})}
+                  style={{marginTop:8,width:"100%",padding:"8px 12px",border:"1px solid #d1d5db",borderRadius:8,fontSize:14,boxSizing:"border-box"}}/>
+              )}
+            </div>
+            {[{label:"Sales ($)",key:"sales",ph:"0.00"},{label:"How many Autopays",key:"autopays",ph:"0"},{label:"Total Points Sales",key:"points",ph:"0"}].map(({label,key,ph})=>(
+              <label key={key} style={{display:"block",marginBottom:12}}>
+                <span style={{fontSize:13,color:"#6b7280"}}>{label}</span>
+                <input type="number" value={confirmForm[key]} placeholder={ph} onChange={e=>setConfirmForm({...confirmForm,[key]:e.target.value})}
+                  style={{display:"block",width:"100%",marginTop:4,padding:"8px 12px",border:"1px solid #d1d5db",borderRadius:8,fontSize:14,boxSizing:"border-box"}}/>
+              </label>
+            ))}
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={()=>setConfirmModal(null)} style={{flex:1,padding:10,border:"1px solid #d1d5db",borderRadius:8,cursor:"pointer",background:"white"}}>Cancel</button>
+              <button onClick={saveConfirm} style={{flex:1,padding:10,background:"#4f46e5",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
