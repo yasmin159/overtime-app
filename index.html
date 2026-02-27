@@ -49,7 +49,7 @@ const emptyWeek=(agts)=>{const s={};agts.forEach(a=>{s[a.id]={};DAYS.forEach(d=>
 const defaultAgents=[{id:1,name:"Agent 1",rank:1},{id:2,name:"Agent 2",rank:2},{id:3,name:"Agent 3",rank:3},{id:4,name:"Agent 4",rank:4},{id:5,name:"Agent 5",rank:5}];
 
 const postToSheet=async(payload)=>{
-  try{await fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});}
+  try{await fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(payload)});}
   catch(e){console.error(e);}
 };
 const LS={
