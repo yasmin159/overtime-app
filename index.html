@@ -8,20 +8,19 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-  <style>* {box-sizing:border-box;margin:0;padding:0;} body {font-family:sans-serif;background:#f8fafc;min-height:100vh;} select,input,textarea,button{font-family:inherit;}</style>
+  <style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:sans-serif;background:#f8fafc;min-height:100vh;}select,input,textarea,button{font-family:inherit;}</style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect} = React;
+const {useState,useEffect}=React;
+const DAYS=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+const GAS_URL="https://script.google.com/a/macros/mazama.ai/s/AKfycby9G8nLTfAySH_6DL0udcmqHMcMoWqJ_mr7wrcpEUogiogMBT6kW2KEHAJsv58AHFMi/exec";
+const EMOJIS=["🔥","💰","🏆","⚡","🎯","🎉","💎","🚀","⭐","🎁","💪","🏅"];
 
-const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
-const GAS_URL = "https://script.google.com/a/macros/mazama.ai/s/AKfycbxgdZvgfCzzrS2xagu7DZmgiAjQAJkZ-SiRKgRjyZtSAUkmBkVUY4-JAegQUQuM30wq/exec";
-const EMOJIS = ["🔥","💰","🏆","⚡","🎯","🎉","💎","🚀","⭐","🎁","💪","🏅"];
-
-const TIME_OPTIONS = (()=>{
+const TIME_OPTIONS=(()=>{
   const t=[];
-  for(let h=6;h<=22;h++) for(let m of [0,15,30,45]){if(h===22&&m>0)break; t.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}
+  for(let h=6;h<=22;h++) for(let m of [0,15,30,45]){if(h===22&&m>0)break;t.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}
   return t;
 })();
 
@@ -53,7 +52,6 @@ const postToSheet=async(payload)=>{
   try{await fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});}
   catch(e){console.error(e);}
 };
-
 const LS={
   get:(k)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}},
   set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
@@ -70,7 +68,6 @@ function App(){
   const [weekAgents,setWeekAgents]=useState(()=>LS.get("weekAgents")||{[thisKey]:defaultAgents,[nextKey]:defaultAgents});
   const [weekSchedule,setWeekSchedule]=useState(()=>LS.get("weekSchedule")||{[thisKey]:emptyWeek(defaultAgents),[nextKey]:emptyWeek(defaultAgents)});
   const [weekNotes,setWeekNotes]=useState(()=>LS.get("weekNotes")||{});
-  const [newAgent,setNewAgent]=useState("");
   const [rankEdit,setRankEdit]=useState(false);
   const [importMsg,setImportMsg]=useState("");
   const [confirmModal,setConfirmModal]=useState(null);
@@ -85,7 +82,6 @@ function App(){
   const weekMon=(k)=>k===thisKey?thisMon:nextMon;
 
   const setAgents=(na)=>{const nwa={...weekAgents,[activeWeek]:na};setWeekAgents(nwa);LS.set("weekAgents",nwa);};
-
   const getCell=(aid,day)=>(weekSchedule[activeWeek]?.[aid]?.[day])||emptyDay();
   const updateCell=(aid,day,cell)=>{
     const ns={...weekSchedule,[activeWeek]:{...weekSchedule[activeWeek],[aid]:{...weekSchedule[activeWeek]?.[aid],[day]:cell}}};
@@ -93,14 +89,20 @@ function App(){
   };
 
   const addOT=(aid,day)=>{const c=getCell(aid,day);if(c.overtimes.length>=6)return;updateCell(aid,day,{...c,overtimes:[...c.overtimes,newOT()]});};
-  const removeOT=(aid,day,otId)=>{const c=getCell(aid,day);updateCell(aid,day,{...c,overtimes:c.overtimes.filter(o=>o.id!==otId)});postToSheet({action:"deleteRow",sheetName:"OT History",rowId:`${activeWeek}-${aid}-${day}-${otId}`});};
+  const removeOT=(aid,day,otId)=>{
+    const c=getCell(aid,day);
+    updateCell(aid,day,{...c,overtimes:c.overtimes.filter(o=>o.id!==otId)});
+    postToSheet({action:"deleteRow",sheetName:"OT History",rowId:`${activeWeek}-${aid}-${day}-${otId}`});
+  };
   const updateOTTime=(aid,day,otId,field,val)=>{
     const c=getCell(aid,day);
     const ots=c.overtimes.map(o=>{if(o.id!==otId)return o;const u={...o,[field]:val};u.slot=buildSlot(u.start,u.end);return u;});
     updateCell(aid,day,{...c,overtimes:ots});
   };
-  const updateOTApproval=(aid,day,otId,val)=>{const c=getCell(aid,day);updateCell(aid,day,{...c,overtimes:c.overtimes.map(o=>o.id===otId?{...o,approved:val}:o)});};
-
+  const updateOTApproval=(aid,day,otId,val)=>{
+    const c=getCell(aid,day);
+    updateCell(aid,day,{...c,overtimes:c.overtimes.map(o=>o.id===otId?{...o,approved:val}:o)});
+  };
   const openConfirm=(aid,day,otId)=>{
     const ot=getCell(aid,day).overtimes.find(o=>o.id===otId);
     setConfirmForm({confirmed:ot?.confirmed||false,sales:ot?.sales||"",autopays:ot?.autopays||"",points:ot?.points||"",timeType:ot?.timeType||"same",realStart:ot?.realStart||"",realEnd:ot?.realEnd||""});
@@ -127,7 +129,10 @@ function App(){
     postToSheet({action:"logNote",noteId:`${activeWeek}-${day}-${note.id}`,week:activeWeek,weekLabel:fmtWeek(weekMon(activeWeek)),day,emoji:note.emoji,text:note.text});
     setNoteForm({text:"",emoji:"🔥"});setNoteModal(null);
   };
-  const removeNote=(day,id)=>{saveNotes(day,getNotes(day).filter(n=>n.id!==id));postToSheet({action:"deleteRow",sheetName:"Daily Notes",rowId:`${activeWeek}-${day}-${id}`});};
+  const removeNote=(day,id)=>{
+    saveNotes(day,getNotes(day).filter(n=>n.id!==id));
+    postToSheet({action:"deleteRow",sheetName:"Daily Notes",rowId:`${activeWeek}-${day}-${id}`});
+  };
 
   const handleCSVImport=(e)=>{
     const file=e.target.files[0];if(!file)return;
@@ -170,33 +175,23 @@ function App(){
     setImportMsg("✅ Shifts copied. OT is blank.");setTimeout(()=>setImportMsg(""),4000);
   };
 
-  const addAgent=()=>{
-    if(!newAgent.trim())return;
-    const id=Date.now(),na=[...agents,{id,name:newAgent.trim(),rank:agents.length+1}];
-    const ns={...weekSchedule,[activeWeek]:{...schedule,[id]:{}}};
-    DAYS.forEach(d=>{ns[activeWeek][id][d]=emptyDay();});
-    setAgents(na);setWeekSchedule(ns);LS.set("weekSchedule",ns);setNewAgent("");
-  };
-  const removeAgent=id=>setAgents(agents.filter(a=>a.id!==id));
-  const updateRank=(id,val)=>setAgents(agents.map(a=>a.id===id?{...a,rank:parseInt(val)||a.rank}:a));
-
   // Summary calculations
   const sumByDay={};
   DAYS.forEach(d=>{sumByDay[d]={agents:[],totalSales:0,totalAutopays:0,totalPoints:0,totalOTs:0,totalHours:0};});
   let wkS=0,wkA=0,wkP=0,wkO=0,wkH=0;
   const agentTotals={};
   sortedAgents.forEach(agent=>{
-    let as=0,ap=0,apts=0,ah=0,asess=0;
+    let as=0,apts=0,ah=0,asess=0;
     DAYS.forEach(day=>{
       getCell(agent.id,day).overtimes.filter(o=>o.confirmed&&o.slot).forEach(ot=>{
         const s=parseFloat(ot.sales)||0,a=parseInt(ot.autopays)||0,p=parseInt(ot.points)||0,h=parseHours(ot.slot);
         sumByDay[day].agents.push({name:agent.name,slot:ot.slot,sales:s,autopays:a,points:p,hours:h,approved:ot.approved});
         sumByDay[day].totalSales+=s;sumByDay[day].totalAutopays+=a;sumByDay[day].totalPoints+=p;sumByDay[day].totalOTs+=1;sumByDay[day].totalHours+=h;
         wkS+=s;wkA+=a;wkP+=p;wkO+=1;wkH+=h;
-        as+=s;ap+=a;apts+=p;ah+=h;asess+=1;
+        as+=s;apts+=p;ah+=h;asess+=1;
       });
     });
-    agentTotals[agent.id]={sales:as,autopays:ap,points:apts,hours:ah,sessions:asess};
+    agentTotals[agent.id]={sales:as,points:apts,hours:ah,sessions:asess};
   });
 
   const histRows=[];
@@ -235,8 +230,9 @@ function App(){
     </div>
   );
 
-  return (
+  return(
     <div style={{maxWidth:1200,margin:"0 auto",padding:16}}>
+
       {/* HEADER */}
       <div style={{background:"#4f46e5",borderRadius:12,padding:"16px 24px",marginBottom:20,color:"white"}}>
         <h1 style={{margin:0,fontSize:22}}>📞 Call Center Overtime Manager</h1>
@@ -257,7 +253,6 @@ function App(){
         <TabBtn k="summary" label="📊 Summary"/>
         <TabBtn k="ranking" label="🏆 Ranking"/>
         <TabBtn k="history" label="📋 History"/>
-        <TabBtn k="agents" label="👥 Agents"/>
         <TabBtn k="import" label="📂 Import Shifts"/>
       </div>
       <WeekToggle/>
@@ -377,7 +372,7 @@ function App(){
                       <div style={{width:8,height:8,borderRadius:"50%",flexShrink:0,background:ot.approved===true?"#16a34a":ot.approved===false?"#dc2626":"#d1d5db"}}/>
                       <div style={{flex:1,minWidth:120}}>
                         <div style={{fontWeight:600,fontSize:14}}>{agent.name}</div>
-                        <div style={{fontSize:12,color:"#6b7280"}}>{ot.slot||`${ot.start} → ${ot.end||"?"}`} {ot.slot&&<span style={{color:"#4f46e5"}}>· {fmtHours(parseHours(ot.slot))}</span>}</div>
+                        <div style={{fontSize:12,color:"#6b7280"}}>{ot.slot||`${ot.start} → ${ot.end||"?"}`}{ot.slot&&<span style={{color:"#4f46e5",marginLeft:6}}>· {fmtHours(parseHours(ot.slot))}</span>}</div>
                       </div>
                       <div style={{fontSize:12,padding:"2px 8px",borderRadius:12,background:ot.confirmed?"#dcfce7":"#fef9c3",color:ot.confirmed?"#15803d":"#a16207"}}>
                         {ot.confirmed?"✅ Confirmed":"⏳ Pending"}
@@ -444,9 +439,8 @@ function App(){
               ))}
             </div>
           </div>
-          {/* Agent totals */}
           <div style={{background:"white",borderRadius:12,marginBottom:20,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
-            <div style={{background:"#f0f4ff",padding:"10px 16px",fontWeight:700,fontSize:14}}>👤 Agent Totals — This Week</div>
+            <div style={{background:"#f0f4ff",padding:"10px 16px",fontWeight:700,fontSize:14}}>👤 Agent Totals — {weekLabel(activeWeek)}</div>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
               <thead><tr style={{background:"#fafafa"}}>{["Rank","Agent","Sessions","OT Hours","Sales","Points"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>
@@ -455,7 +449,7 @@ function App(){
                   return(
                     <tr key={agent.id} style={{background:i%2===0?"white":"#fafafa",opacity:t.sessions>0?1:.45}}>
                       <td style={{...td,textAlign:"center"}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":`#${agent.rank}`}</td>
-                      <td style={{...td,fontWeight:600}}>{agent.name}{agent.rankPct?<span style={{fontSize:11,color:"#6b7280",marginLeft:6}}>({agent.rankPct}%)</span>:null}</td>
+                      <td style={{...td,fontWeight:600}}>{agent.name}{agent.rankPct!=null?<span style={{fontSize:11,color:"#6b7280",marginLeft:6}}>({agent.rankPct}%)</span>:null}</td>
                       <td style={{...td,textAlign:"center"}}>{t.sessions||"—"}</td>
                       <td style={{...td,textAlign:"center"}}>{t.hours>0?fmtHours(t.hours):"—"}</td>
                       <td style={{...td,textAlign:"center"}}>{t.sales>0?t.sales.toFixed(2):"—"}</td>
@@ -473,7 +467,6 @@ function App(){
               </tbody>
             </table>
           </div>
-          {/* Per day */}
           {DAYS.map(day=>{
             const d=sumByDay[day];
             if(!d.agents.length)return(
@@ -524,7 +517,7 @@ function App(){
             <h2 style={{margin:0,fontSize:18}}>🏆 Agent Ranking — {weekLabel(activeWeek)}</h2>
             <button onClick={()=>setRankEdit(!rankEdit)} style={{padding:"8px 16px",background:"#4f46e5",color:"white",border:"none",borderRadius:8,cursor:"pointer"}}>{rankEdit?"✅ Save":"✏️ Edit Ranking"}</button>
           </div>
-          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>OT assignment priority. Update every 15 days. Import Rank% via CSV.</p>
+          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>OT assignment priority. Import Rank% via CSV.</p>
           {sortedAgents.map((a,i)=>(
             <div key={a.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #f3f4f6"}}>
               <div style={{width:32,height:32,borderRadius:"50%",background:i<3?"#fbbf24":"#e5e7eb",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:14}}>
@@ -532,7 +525,7 @@ function App(){
               </div>
               <span style={{flex:1,fontWeight:600}}>{a.name}</span>
               {a.rankPct!=null&&<span style={{fontSize:13,background:"#f0f4ff",color:"#4f46e5",padding:"2px 8px",borderRadius:6}}>{a.rankPct}%</span>}
-              {rankEdit?<input type="number" value={a.rank} onChange={e=>updateRank(a.id,e.target.value)} style={{width:60,padding:4,border:"1px solid #d1d5db",borderRadius:6,textAlign:"center"}}/>
+              {rankEdit?<input type="number" value={a.rank} onChange={e=>{const na=agents.map(ag=>ag.id===a.id?{...ag,rank:parseInt(e.target.value)||ag.rank}:ag);setAgents(na);}} style={{width:60,padding:4,border:"1px solid #d1d5db",borderRadius:6,textAlign:"center"}}/>
                 :<span style={{color:"#6b7280",fontSize:13}}>Rank #{a.rank}</span>}
             </div>
           ))}
@@ -563,26 +556,6 @@ function App(){
                 </tbody>
               </table>
             </div>}
-        </div>
-      )}
-
-      {/* AGENTS */}
-      {tab==="agents"&&(
-        <div style={{background:"white",borderRadius:12,padding:20}}>
-          <h2 style={{margin:"0 0 4px",fontSize:18}}>👥 Agents — {weekLabel(activeWeek)}</h2>
-          <p style={{color:"#6b7280",fontSize:13,marginBottom:16}}>Agent lists are independent per week.</p>
-          <div style={{display:"flex",gap:8,marginBottom:20}}>
-            <input value={newAgent} onChange={e=>setNewAgent(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAgent()} placeholder="Agent name..."
-              style={{flex:1,padding:"8px 12px",border:"1px solid #d1d5db",borderRadius:8,fontSize:14}}/>
-            <button onClick={addAgent} style={{padding:"8px 16px",background:"#4f46e5",color:"white",border:"none",borderRadius:8,cursor:"pointer"}}>+ Add</button>
-          </div>
-          {agents.map(a=>(
-            <div key={a.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #f3f4f6"}}>
-              <span style={{flex:1,fontWeight:600}}>{a.name}</span>
-              <span style={{color:"#9ca3af",fontSize:13}}>Rank #{a.rank}</span>
-              <button onClick={()=>removeAgent(a.id)} style={{padding:"4px 10px",background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:6,cursor:"pointer"}}>Remove</button>
-            </div>
-          ))}
         </div>
       )}
 
@@ -691,7 +664,6 @@ function App(){
     </div>
   );
 }
-
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
